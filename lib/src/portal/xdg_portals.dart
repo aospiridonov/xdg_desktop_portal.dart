@@ -5,3 +5,4 @@ export 'notification/xdg_notification_portal.dart';
 export 'open_uri/xdg_open_uri_portal.dart';
 export 'proxy_resolver/xdg_proxy_resolver_portal.dart';
 export 'settings/xdg_settings_portal.dart';
+export 'file_chooser/xdg_file_chooser_portal.dart';

@@ -25,6 +25,9 @@ class XdgDesktopPortalClient {
   /// Portal to send email.
   late final XdgEmailPortal email;
 
+  /// Portal to request access to files.
+  late final XdgFileChooserPortal fileChooser;
+
   /// Portal to get location information.
   late final XdgLocationPortal location;
 
@@ -92,6 +95,7 @@ class XdgDesktopPortalClient {
       },
     );
     email = XdgEmailPortal(this);
+    fileChooser = XdgFileChooserPortal(this);
     location = XdgLocationPortal(this);
     networkMonitor = XdgNetworkMonitorPortal(this);
     notification = XdgNotificationPortal(this);
@@ -149,8 +153,8 @@ class XdgDesktopPortalClient {
   }
 
   /// Record an active portal request.
-  void addRequest(XdgPortalRequest request) {
-    _requests[request.path] = request;
+  void addRequest(DBusObjectPath path, XdgPortalRequest request) {
+    _requests[path] = request;
   }
 
   /// Record an active portal session.

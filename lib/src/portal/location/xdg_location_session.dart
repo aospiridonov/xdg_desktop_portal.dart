@@ -19,16 +19,15 @@ class XdgLocationSession extends XdgPortalSession {
 
   /// Start this session.
   Future<XdgPortalRequest> start({String parentWindow = ''}) async {
-    var options = <String, DBusValue>{};
-    var result = await portalClient.callMethod(
-      'org.freedesktop.portal.Location',
-      'Start',
-      [path, DBusString(parentWindow), DBusDict.stringVariant(options)],
-      replySignature: DBusSignature('o'),
-    );
-    var handle = result.returnValues[0].asObjectPath();
-    var request = XdgPortalRequest(portalClient, handle);
-    portalClient.addRequest(request);
+    var request = XdgPortalRequest(portalClient, () async {
+      var options = <String, DBusValue>{};
+      var result = await portalClient.callMethod(
+          'org.freedesktop.portal.Location',
+          'Start',
+          [path, DBusString(parentWindow), DBusDict.stringVariant(options)],
+          replySignature: DBusSignature('o'));
+      return result.returnValues[0].asObjectPath();
+    });
     return request;
   }
 

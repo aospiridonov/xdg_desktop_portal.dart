@@ -18,39 +18,62 @@ class XdgPortalRequestFailedException implements Exception {
 }
 
 /// A request sent to a portal.
-class XdgPortalRequest extends DBusRemoteObject {
-  /// The result of this request.
-  Future<XdgPortalResponse> get response => _response.future;
-  final _response = Completer<XdgPortalResponse>();
+class XdgPortalRequest {
+  /// The client that is the request is from.
+  XdgDesktopPortalClient client;
 
-  XdgPortalRequest(XdgDesktopPortalClient client, DBusObjectPath path)
-      : super(client.bus, name: client.name, path: path);
+  /// Stream containing the single result returned from the portal.
+  Stream<Map<String, DBusValue>> get stream => _controller.stream;
 
-  /// Waits for a success response to be received or throws an exception.
-  Future<void> checkSuccess() async {
-    switch (await response) {
-      case XdgPortalResponse.success:
-        return;
-      case XdgPortalResponse.cancelled:
-        throw XdgPortalRequestCancelledException();
-      case XdgPortalResponse.other:
-      default:
-        throw XdgPortalRequestFailedException();
-    }
+  final Future<DBusObjectPath> Function() _send;
+  late final StreamController<Map<String, DBusValue>> _controller;
+  final _listenCompleter = Completer();
+  late final DBusRemoteObject _object;
+  var _haveResponse = false;
+
+  XdgPortalRequest(this.client, this._send) {
+    _controller = StreamController<Map<String, DBusValue>>(
+        onListen: _onListen, onCancel: _onCancel);
   }
 
-  /// Ends the user interaction with this request.
-  Future<void> close() async {
-    await callMethod(
-      'org.freedesktop.portal.Request',
-      'Close',
-      [],
-      replySignature: DBusSignature(''),
-    );
+  /// Send the request.
+  Future<void> _onListen() async {
+    var path = await _send();
+    _object = DBusRemoteObject(client.bus, name: client.name, path: path);
+    client.addRequest(path, this);
+    _listenCompleter.complete();
+  }
+
+  Future<void> _onCancel() async {
+    // Ensure that we have started the stream
+    await _listenCompleter.future;
+
+    // If got a response, then the request object has already been removed.
+    if (!_haveResponse) {
+      try {
+        await _object.callMethod('org.freedesktop.portal.Request', 'Close', [],
+            replySignature: DBusSignature(''));
+      } on DBusMethodResponseException {
+        // Ignore errors, as the request may have completed before the close request was received.
+      }
+    }
   }
 
   void handleResponse(
       XdgPortalResponse response, Map<String, DBusValue> result) {
-    _response.complete(response);
+    _haveResponse = true;
+    switch (response) {
+      case XdgPortalResponse.success:
+        _controller.add(result);
+        return;
+      case XdgPortalResponse.cancelled:
+        _controller.addError(XdgPortalRequestCancelledException());
+        break;
+      case XdgPortalResponse.other:
+      default:
+        _controller.addError(XdgPortalRequestFailedException());
+        break;
+    }
+    _controller.close();
   }
 }

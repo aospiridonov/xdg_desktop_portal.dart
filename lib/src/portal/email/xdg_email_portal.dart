@@ -20,37 +20,35 @@ class XdgEmailPortal {
     String? subject,
     String? body,
   }) async {
-    var options = <String, DBusValue>{};
-    options['handle_token'] = DBusString(client.generateToken());
-    if (address != null) {
-      options['address'] = DBusString(address);
-    }
-    if (addresses.isNotEmpty) {
-      options['addresses'] = DBusArray.string(addresses);
-    }
-    if (cc.isNotEmpty) {
-      options['cc'] = DBusArray.string(cc);
-    }
-    if (bcc.isNotEmpty) {
-      options['bcc'] = DBusArray.string(bcc);
-    }
-    if (subject != null) {
-      options['subject'] = DBusString(subject);
-    }
-    if (body != null) {
-      options['body'] = DBusString(body);
-    }
-    var result = await client.callMethod(
-      'org.freedesktop.portal.Email',
-      'ComposeEmail',
-      [DBusString(parentWindow), DBusDict.stringVariant(options)],
-      replySignature: DBusSignature('o'),
-    );
-    var request = XdgPortalRequest(
-      client,
-      result.returnValues[0].asObjectPath(),
-    );
-    client.addRequest(request);
-    await request.checkSuccess();
+    var request = XdgPortalRequest(client, () async {
+      var options = <String, DBusValue>{};
+      options['handle_token'] = DBusString(client.generateToken());
+      if (address != null) {
+        options['address'] = DBusString(address);
+      }
+      if (addresses.isNotEmpty) {
+        options['addresses'] = DBusArray.string(addresses);
+      }
+      if (cc.isNotEmpty) {
+        options['cc'] = DBusArray.string(cc);
+      }
+      if (bcc.isNotEmpty) {
+        options['bcc'] = DBusArray.string(bcc);
+      }
+      if (subject != null) {
+        options['subject'] = DBusString(subject);
+      }
+      if (body != null) {
+        options['body'] = DBusString(body);
+      }
+      var result = await client.callMethod(
+        'org.freedesktop.portal.Email',
+        'ComposeEmail',
+        [DBusString(parentWindow), DBusDict.stringVariant(options)],
+        replySignature: DBusSignature('o'),
+      );
+      return result.returnValues[0].asObjectPath();
+    });
+    await request.stream.first;
   }
 }

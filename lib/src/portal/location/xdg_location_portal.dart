@@ -144,7 +144,7 @@ class _LocationStreamController {
     );
     client.addSession(session!);
     var startRequest = await session!.start(parentWindow: parentWindow);
-    await startRequest.checkSuccess();
+    await startRequest.stream.first;
   }
 
   Future<void> _onCancel() async {

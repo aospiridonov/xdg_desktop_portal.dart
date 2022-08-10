@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'dart:io';
 import 'dart:typed_data';
@@ -6,6 +7,8 @@ import 'dart:typed_data';
 import 'package:collection/collection.dart';
 import 'package:dbus/dbus.dart';
 import 'package:test/test.dart';
+import 'package:xdg_desktop_portal/src/portal/file_chooser/xdg_file_chooser_choice.dart';
+import 'package:xdg_desktop_portal/src/portal/file_chooser/xdg_file_chooser_filter.dart';
 import 'package:xdg_desktop_portal/src/portal/location/xdg_location.dart';
 import 'package:xdg_desktop_portal/src/portal/location/xdg_location_accuracy.dart';
 import 'package:xdg_desktop_portal/src/portal/network/xdg_network_status.dart';
@@ -15,34 +18,41 @@ import 'package:xdg_desktop_portal/src/portal/notification/xdg_notification_prio
 import 'package:xdg_desktop_portal/xdg_desktop_portal.dart';
 
 class MockEmail {
+  final String parentWindow;
   final Map<String, DBusValue> options;
 
-  MockEmail(this.options);
+  MockEmail(this.parentWindow, this.options);
 
   @override
-  int get hashCode => Object.hashAll(
-      options.entries.map((entry) => Object.hash(entry.key, entry.value)));
+  int get hashCode => Object.hash(
+      parentWindow,
+      Object.hashAll(
+          options.entries.map((entry) => Object.hash(entry.key, entry.value))));
 
   @override
   bool operator ==(other) {
     if (identical(this, other)) return true;
     final mapEquals = const DeepCollectionEquality().equals;
 
-    return other is MockEmail && mapEquals(other.options, options);
+    return other is MockEmail &&
+        other.parentWindow == parentWindow &&
+        mapEquals(other.options, options);
   }
 
   @override
-  String toString() => '$runtimeType($options)';
+  String toString() => '$runtimeType($parentWindow, $options)';
 }
 
 class MockUri {
+  final String parentWindow;
   final String uri;
   final Map<String, DBusValue> options;
 
-  MockUri(this.uri, this.options);
+  MockUri(this.parentWindow, this.uri, this.options);
 
   @override
   int get hashCode => Object.hash(
+      parentWindow,
       uri,
       Object.hashAll(
           options.entries.map((entry) => Object.hash(entry.key, entry.value))));
@@ -53,6 +63,7 @@ class MockUri {
     final mapEquals = const DeepCollectionEquality().equals;
 
     return other is MockUri &&
+        other.parentWindow == parentWindow &&
         other.uri == uri &&
         mapEquals(other.options, options);
   }
@@ -61,10 +72,67 @@ class MockUri {
   String toString() => '$runtimeType($uri, $options)';
 }
 
+class MockDialog {
+  final String parentWindow;
+  final String title;
+  final Map<String, DBusValue> options;
+
+  MockDialog(this.parentWindow, this.title, this.options);
+
+  @override
+  int get hashCode => Object.hash(
+      parentWindow,
+      title,
+      Object.hashAll(
+          options.entries.map((entry) => Object.hash(entry.key, entry.value))));
+
+  @override
+  bool operator ==(other) {
+    if (identical(this, other)) return true;
+    final mapEquals = const DeepCollectionEquality().equals;
+
+    return other is MockDialog &&
+        other.parentWindow == parentWindow &&
+        other.title == title &&
+        mapEquals(other.options, options);
+  }
+
+  @override
+  String toString() => '$runtimeType($parentWindow, $title, $options)';
+}
+
+class MockLocationSession {
+  String? parentWindow;
+  final Map<String, DBusValue> options;
+
+  MockLocationSession(this.parentWindow, this.options);
+
+  @override
+  int get hashCode => Object.hash(
+      parentWindow,
+      Object.hashAll(
+          options.entries.map((entry) => Object.hash(entry.key, entry.value))));
+
+  @override
+  bool operator ==(other) {
+    if (identical(this, other)) return true;
+    final mapEquals = const DeepCollectionEquality().equals;
+
+    return other is MockLocationSession &&
+        other.parentWindow == parentWindow &&
+        mapEquals(other.options, options);
+  }
+
+  @override
+  String toString() => '$runtimeType($parentWindow, $options)';
+}
+
 class MockPortalRequestObject extends DBusObject {
   final MockPortalServer server;
+  Future<void> Function()? onClosed;
 
-  MockPortalRequestObject(this.server, String sender, String token)
+  MockPortalRequestObject(
+      this.server, String sender, String token, this.onClosed)
       : super(DBusObjectPath(
             '/org/freedesktop/portal/desktop/request/${sender.substring(1).replaceAll('.', '_')}/$token'));
 
@@ -75,6 +143,9 @@ class MockPortalRequestObject extends DBusObject {
     }
 
     if (methodCall.name == 'Close') {
+      if (onClosed != null) {
+        await onClosed!();
+      }
       await server.removeRequest(this);
       return DBusMethodSuccessResponse();
     } else {
@@ -123,6 +194,8 @@ class MockPortalObject extends DBusObject {
     switch (methodCall.interface) {
       case 'org.freedesktop.portal.Email':
         return handleEmailMethodCall(methodCall);
+      case 'org.freedesktop.portal.FileChooser':
+        return handleFileChooserMethodCall(methodCall);
       case 'org.freedesktop.portal.Location':
         return handleLocationMethodCall(methodCall);
       case 'org.freedesktop.portal.NetworkMonitor':
@@ -146,13 +219,80 @@ class MockPortalObject extends DBusObject {
       case 'ComposeEmail':
         var parentWindow = methodCall.values[0].asString();
         var options = methodCall.values[1].asStringVariantDict();
-        server.lastParentWindow = parentWindow;
-        server.composedEmails.add(MockEmail(options));
+        server.composedEmails.add(MockEmail(parentWindow, options));
         var token =
             options['handle_token']?.asString() ?? server.generateToken();
         options.removeWhere((key, value) => key == 'handle_token');
         var request = await server.addRequest(methodCall.sender, token);
         Future.delayed(Duration.zero, () async => await request.respond());
+        return DBusMethodSuccessResponse([request.path]);
+      default:
+        return DBusMethodErrorResponse.unknownMethod();
+    }
+  }
+
+  Future<DBusMethodResponse> handleFileChooserMethodCall(
+      DBusMethodCall methodCall) async {
+    switch (methodCall.name) {
+      case 'OpenFile':
+        var parentWindow = methodCall.values[0].asString();
+        var title = methodCall.values[1].asString();
+        var options = methodCall.values[2].asStringVariantDict();
+        var token =
+            options['handle_token']?.asString() ?? server.generateToken();
+        options.removeWhere((key, value) => key == 'handle_token');
+        var dialog = MockDialog(parentWindow, title, options);
+        server.openFileDialogs.add(dialog);
+        var request = await server.addRequest(methodCall.sender, token,
+            onClosed: () async {
+          server.openFileDialogs.remove(dialog);
+        });
+        if (server.openFileUris != null) {
+          Future.delayed(
+              Duration.zero,
+              () async => await request.respond(
+                  result: {'uris': DBusArray.string(server.openFileUris!)}));
+        }
+        return DBusMethodSuccessResponse([request.path]);
+      case 'SaveFile':
+        var parentWindow = methodCall.values[0].asString();
+        var title = methodCall.values[1].asString();
+        var options = methodCall.values[2].asStringVariantDict();
+        var token =
+            options['handle_token']?.asString() ?? server.generateToken();
+        options.removeWhere((key, value) => key == 'handle_token');
+        var dialog = MockDialog(parentWindow, title, options);
+        server.saveFileDialogs.add(dialog);
+        var request = await server.addRequest(methodCall.sender, token,
+            onClosed: () async {
+          server.saveFileDialogs.remove(dialog);
+        });
+        if (server.saveFileUris != null) {
+          Future.delayed(
+              Duration.zero,
+              () async => await request.respond(
+                  result: {'uris': DBusArray.string(server.saveFileUris!)}));
+        }
+        return DBusMethodSuccessResponse([request.path]);
+      case 'SaveFiles':
+        var parentWindow = methodCall.values[0].asString();
+        var title = methodCall.values[1].asString();
+        var options = methodCall.values[2].asStringVariantDict();
+        var token =
+            options['handle_token']?.asString() ?? server.generateToken();
+        options.removeWhere((key, value) => key == 'handle_token');
+        var dialog = MockDialog(parentWindow, title, options);
+        server.saveFilesDialogs.add(dialog);
+        var request = await server.addRequest(methodCall.sender, token,
+            onClosed: () async {
+          server.saveFilesDialogs.remove(dialog);
+        });
+        if (server.saveFilesUris != null) {
+          Future.delayed(
+              Duration.zero,
+              () async => await request.respond(
+                  result: {'uris': DBusArray.string(server.saveFilesUris!)}));
+        }
         return DBusMethodSuccessResponse([request.path]);
       default:
         return DBusMethodErrorResponse.unknownMethod();
@@ -168,17 +308,19 @@ class MockPortalObject extends DBusObject {
         if (token == null) {
           return DBusMethodErrorResponse.invalidArgs('Missing token');
         }
-        server.locationDistanceThreshold =
-            options['distance-threshold']?.asUint32();
-        server.locationTimeThreshold = options['time-threshold']?.asUint32();
-        server.locationAccuracy = options['accuracy']?.asUint32();
+        options.removeWhere((key, value) => key == 'session_handle_token');
+        var locationSession = MockLocationSession(null, options);
         var session = await server.addSession(token);
+        server._locationSessions[session.path] = locationSession;
         return DBusMethodSuccessResponse([session.path]);
       case 'Start':
         var path = methodCall.values[0].asObjectPath();
         var parentWindow = methodCall.values[1].asString();
+        var locationSession = server._locationSessions[path];
+        if (locationSession != null) {
+          locationSession.parentWindow = parentWindow;
+        }
         var options = methodCall.values[2].asStringVariantDict();
-        server.lastParentWindow = parentWindow;
         var token =
             options['handle_token']?.asString() ?? server.generateToken();
         var request = await server.addRequest(methodCall.sender, token);
@@ -265,8 +407,7 @@ class MockPortalObject extends DBusObject {
         var token =
             options['handle_token']?.asString() ?? server.generateToken();
         options.removeWhere((key, value) => key == 'handle_token');
-        server.lastParentWindow = parentWindow;
-        server.openedUris.add(MockUri(uri, options));
+        server.openedUris.add(MockUri(parentWindow, uri, options));
         var request = await server.addRequest(methodCall.sender, token);
         Future.delayed(Duration.zero, () async => await request.respond());
         return DBusMethodSuccessResponse([request.path]);
@@ -326,6 +467,9 @@ class MockPortalServer extends DBusClient {
   final sessions = <MockPortalSessionObject>[];
   final usedTokens = <String>{};
 
+  final List<String>? openFileUris;
+  final List<String>? saveFileUris;
+  final List<String>? saveFilesUris;
   late final Map<String, Map<String, DBusValue>> notifications;
   final Map<String, List<String>> proxies;
   final Map<String, Map<String, DBusValue>> settingsValues;
@@ -340,15 +484,20 @@ class MockPortalServer extends DBusClient {
   bool networkMetered;
   int networkConnectivity;
 
-  String? lastParentWindow;
   final composedEmails = <MockEmail>[];
-  int? locationDistanceThreshold;
-  int? locationTimeThreshold;
-  int? locationAccuracy;
   final openedUris = <MockUri>[];
+  final openFileDialogs = <MockDialog>[];
+  final saveFileDialogs = <MockDialog>[];
+  final saveFilesDialogs = <MockDialog>[];
+  Iterable<MockLocationSession> get locationSessions =>
+      _locationSessions.values;
+  final _locationSessions = <DBusObjectPath, MockLocationSession>{};
 
   MockPortalServer(DBusAddress clientAddress,
-      {Map<String, Map<String, DBusValue>>? notifications,
+      {this.openFileUris,
+      this.saveFileUris,
+      this.saveFilesUris,
+      Map<String, Map<String, DBusValue>>? notifications,
       this.proxies = const {},
       this.settingsValues = const {},
       this.latitude,
@@ -396,9 +545,9 @@ class MockPortalServer extends DBusClient {
     return token;
   }
 
-  Future<MockPortalRequestObject> addRequest(
-      String sender, String token) async {
-    var request = MockPortalRequestObject(this, sender, token);
+  Future<MockPortalRequestObject> addRequest(String sender, String token,
+      {Future<void> Function()? onClosed}) async {
+    var request = MockPortalRequestObject(this, sender, token, onClosed);
     await registerObject(request);
     return request;
   }
@@ -449,11 +598,10 @@ void main() {
         bcc: ['elle@example.com'],
         subject: 'Great Opportunity',
         body: 'Would you like to buy some encyclopedias?');
-    expect(portalServer.lastParentWindow, equals('x11:12345'));
     expect(
         portalServer.composedEmails,
         equals([
-          MockEmail({
+          MockEmail('x11:12345', {
             'address': DBusString('alice@example.com'),
             'addresses':
                 DBusArray.string(['bob@example.com', 'carol@example.com']),
@@ -463,6 +611,469 @@ void main() {
             'body': DBusString('Would you like to buy some encyclopedias?')
           })
         ]));
+  });
+
+  test('file chooser - open file', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress,
+        openFileUris: ['file://home/me/image.png']);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var client = XdgDesktopPortalClient(bus: DBusClient(clientAddress));
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var result = await client.fileChooser.openFile(title: 'Open File').first;
+    expect(portalServer.openFileDialogs,
+        equals([MockDialog('', 'Open File', {})]));
+    expect(result.uris, equals(['file://home/me/image.png']));
+  });
+
+  test('file chooser - open file options', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress,
+        openFileUris: ['file://home/me/image.png']);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var client = XdgDesktopPortalClient(bus: DBusClient(clientAddress));
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var result = await client.fileChooser
+        .openFile(
+            parentWindow: 'x11:12345',
+            title: 'Open File',
+            acceptLabel: 'Foo',
+            modal: true,
+            multiple: true,
+            directory: true,
+            filters: [
+              XdgFileChooserFilter('PNG Image', [
+                XdgFileChooserGlobPattern('*.png'),
+                XdgFileChooserMimeTypePattern('image/png')
+              ])
+            ],
+            currentFilter: XdgFileChooserFilter(
+                'Text Files', [XdgFileChooserGlobPattern('*.txt')]),
+            choices: [
+              XdgFileChooserChoice(
+                  id: 'color',
+                  label: 'Color',
+                  values: {'red': 'Red', 'green': 'Green', 'blue': 'Blue'},
+                  initialSelection: 'green')
+            ])
+        .first;
+    expect(
+        portalServer.openFileDialogs,
+        equals([
+          MockDialog('x11:12345', 'Open File', {
+            'accept_label': DBusString('Foo'),
+            'modal': DBusBoolean(true),
+            'multiple': DBusBoolean(true),
+            'directory': DBusBoolean(true),
+            'filters': DBusArray(DBusSignature('(sa(us))'), [
+              DBusStruct([
+                DBusString('PNG Image'),
+                DBusArray(DBusSignature('(us)'), [
+                  DBusStruct([DBusUint32(0), DBusString('*.png')]),
+                  DBusStruct([DBusUint32(1), DBusString('image/png')])
+                ])
+              ])
+            ]),
+            'current_filter': DBusStruct([
+              DBusString('Text Files'),
+              DBusArray(DBusSignature('(us)'), [
+                DBusStruct([DBusUint32(0), DBusString('*.txt')])
+              ])
+            ]),
+            'choices': DBusArray(DBusSignature('(ssa(ss)s)'), [
+              DBusStruct([
+                DBusString('color'),
+                DBusString('Color'),
+                DBusArray(DBusSignature('(ss)'), [
+                  DBusStruct([DBusString('red'), DBusString('Red')]),
+                  DBusStruct([DBusString('green'), DBusString('Green')]),
+                  DBusStruct([DBusString('blue'), DBusString('Blue')])
+                ]),
+                DBusString('green')
+              ])
+            ])
+          })
+        ]));
+    expect(result.uris, equals(['file://home/me/image.png']));
+  });
+
+  test('file chooser - save file', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress,
+        saveFileUris: ['file://home/me/image.png']);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var client = XdgDesktopPortalClient(bus: DBusClient(clientAddress));
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var result = await client.fileChooser.saveFile(title: 'Save File').first;
+    expect(portalServer.saveFileDialogs,
+        equals([MockDialog('', 'Save File', {})]));
+    expect(result.uris, equals(['file://home/me/image.png']));
+  });
+
+  test('file chooser - save file options', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress,
+        saveFileUris: ['file://home/me/image.png']);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var client = XdgDesktopPortalClient(bus: DBusClient(clientAddress));
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var result = await client.fileChooser
+        .saveFile(
+            parentWindow: 'x11:12345',
+            title: 'Save File',
+            acceptLabel: 'Foo',
+            modal: true,
+            filters: [
+              XdgFileChooserFilter('PNG Image', [
+                XdgFileChooserGlobPattern('*.png'),
+                XdgFileChooserMimeTypePattern('image/png')
+              ])
+            ],
+            currentFilter: XdgFileChooserFilter(
+                'Text Files', [XdgFileChooserGlobPattern('*.txt')]),
+            choices: [
+              XdgFileChooserChoice(
+                  id: 'color',
+                  label: 'Color',
+                  values: {'red': 'Red', 'green': 'Green', 'blue': 'Blue'},
+                  initialSelection: 'green')
+            ],
+            currentName: 'flutter.png',
+            currentFolder: Uint8List.fromList(utf8.encode('/usr/share/icons')),
+            currentFile:
+                Uint8List.fromList(utf8.encode('/usr/share/icons/dart.png')))
+        .first;
+    expect(
+        portalServer.saveFileDialogs,
+        equals([
+          MockDialog('x11:12345', 'Save File', {
+            'accept_label': DBusString('Foo'),
+            'modal': DBusBoolean(true),
+            'filters': DBusArray(DBusSignature('(sa(us))'), [
+              DBusStruct([
+                DBusString('PNG Image'),
+                DBusArray(DBusSignature('(us)'), [
+                  DBusStruct([DBusUint32(0), DBusString('*.png')]),
+                  DBusStruct([DBusUint32(1), DBusString('image/png')])
+                ])
+              ])
+            ]),
+            'current_filter': DBusStruct([
+              DBusString('Text Files'),
+              DBusArray(DBusSignature('(us)'), [
+                DBusStruct([DBusUint32(0), DBusString('*.txt')])
+              ])
+            ]),
+            'choices': DBusArray(DBusSignature('(ssa(ss)s)'), [
+              DBusStruct([
+                DBusString('color'),
+                DBusString('Color'),
+                DBusArray(DBusSignature('(ss)'), [
+                  DBusStruct([DBusString('red'), DBusString('Red')]),
+                  DBusStruct([DBusString('green'), DBusString('Green')]),
+                  DBusStruct([DBusString('blue'), DBusString('Blue')])
+                ]),
+                DBusString('green')
+              ])
+            ]),
+            'current_name': DBusString('flutter.png'),
+            'current_folder': DBusArray.byte([
+              47,
+              117,
+              115,
+              114,
+              47,
+              115,
+              104,
+              97,
+              114,
+              101,
+              47,
+              105,
+              99,
+              111,
+              110,
+              115
+            ]),
+            'current_file': DBusArray.byte([
+              47,
+              117,
+              115,
+              114,
+              47,
+              115,
+              104,
+              97,
+              114,
+              101,
+              47,
+              105,
+              99,
+              111,
+              110,
+              115,
+              47,
+              100,
+              97,
+              114,
+              116,
+              46,
+              112,
+              110,
+              103
+            ])
+          })
+        ]));
+    expect(result.uris, equals(['file://home/me/image.png']));
+  });
+
+  test('file chooser - save files', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress,
+        saveFilesUris: ['file://home/me/image.png']);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var client = XdgDesktopPortalClient(bus: DBusClient(clientAddress));
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var result = await client.fileChooser.saveFiles(title: 'Save Files').first;
+    expect(portalServer.saveFilesDialogs,
+        equals([MockDialog('', 'Save Files', {})]));
+    expect(result.uris, equals(['file://home/me/image.png']));
+  });
+
+  test('file chooser - save files options', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress,
+        saveFilesUris: ['file://home/me/image.png']);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var client = XdgDesktopPortalClient(bus: DBusClient(clientAddress));
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var result = await client.fileChooser
+        .saveFiles(
+            parentWindow: 'x11:12345',
+            title: 'Save Files',
+            acceptLabel: 'Foo',
+            modal: true,
+            choices: [
+              XdgFileChooserChoice(
+                  id: 'color',
+                  label: 'Color',
+                  values: {'red': 'Red', 'green': 'Green', 'blue': 'Blue'},
+                  initialSelection: 'green')
+            ],
+            currentFolder: Uint8List.fromList(utf8.encode('/usr/share/icons')),
+            files: [
+              Uint8List.fromList(utf8.encode('/usr/share/icons/dart.png')),
+              Uint8List.fromList(utf8.encode('/usr/share/icons/flutter.png'))
+            ])
+        .first;
+    expect(
+        portalServer.saveFilesDialogs,
+        equals([
+          MockDialog('x11:12345', 'Save Files', {
+            'accept_label': DBusString('Foo'),
+            'modal': DBusBoolean(true),
+            'choices': DBusArray(DBusSignature('(ssa(ss)s)'), [
+              DBusStruct([
+                DBusString('color'),
+                DBusString('Color'),
+                DBusArray(DBusSignature('(ss)'), [
+                  DBusStruct([DBusString('red'), DBusString('Red')]),
+                  DBusStruct([DBusString('green'), DBusString('Green')]),
+                  DBusStruct([DBusString('blue'), DBusString('Blue')])
+                ]),
+                DBusString('green')
+              ])
+            ]),
+            'current_folder': DBusArray.byte([
+              47,
+              117,
+              115,
+              114,
+              47,
+              115,
+              104,
+              97,
+              114,
+              101,
+              47,
+              105,
+              99,
+              111,
+              110,
+              115
+            ]),
+            'files': DBusArray(DBusSignature('ay'), [
+              DBusArray.byte([
+                47,
+                117,
+                115,
+                114,
+                47,
+                115,
+                104,
+                97,
+                114,
+                101,
+                47,
+                105,
+                99,
+                111,
+                110,
+                115,
+                47,
+                100,
+                97,
+                114,
+                116,
+                46,
+                112,
+                110,
+                103
+              ]),
+              DBusArray.byte([
+                47,
+                117,
+                115,
+                114,
+                47,
+                115,
+                104,
+                97,
+                114,
+                101,
+                47,
+                105,
+                99,
+                111,
+                110,
+                115,
+                47,
+                102,
+                108,
+                117,
+                116,
+                116,
+                101,
+                114,
+                46,
+                112,
+                110,
+                103
+              ])
+            ])
+          })
+        ]));
+    expect(result.uris, equals(['file://home/me/image.png']));
+  });
+
+  test('file chooser - cancel', () async {
+    var server = DBusServer();
+    var clientAddress =
+        await server.listenAddress(DBusAddress.unix(dir: Directory.systemTemp));
+    addTearDown(() async {
+      await server.close();
+    });
+
+    var portalServer = MockPortalServer(clientAddress);
+    await portalServer.start();
+    addTearDown(() async {
+      await portalServer.close();
+    });
+
+    var busClient = DBusClient(clientAddress);
+    var client = XdgDesktopPortalClient(bus: busClient);
+    addTearDown(() async {
+      await client.close();
+    });
+
+    var stream = client.fileChooser.openFile(title: 'Open File');
+    var subscription = stream.listen(expectAsync1((result) {}, count: 0));
+
+    // Ensure that the session has been created and then check for it.
+    await busClient.ping();
+    expect(portalServer.openFileDialogs, hasLength(1));
+
+    // Ensure the dialog is removed when the request is cancelled.
+    await subscription.cancel();
+    expect(portalServer.openFileDialogs, hasLength(0));
   });
 
   test('location', () async {
@@ -524,10 +1135,15 @@ void main() {
           location.toString(),
           equals(
               'XdgLocation(latitude: 40.9, longitude: 174.9, altitude: 42.0, accuracy: 1.2, speed: 28.0, heading: 321.4, timestamp: 2022-07-25 03:09:28.000Z)'));
-      expect(portalServer.locationDistanceThreshold, equals(1));
-      expect(portalServer.locationTimeThreshold, equals(10));
-      expect(portalServer.locationAccuracy, equals(4));
-      expect(portalServer.lastParentWindow, equals('x11:12345'));
+      expect(
+          portalServer.locationSessions,
+          equals([
+            MockLocationSession('x11:12345', {
+              'distance-threshold': DBusUint32(1),
+              'time-threshold': DBusUint32(10),
+              'accuracy': DBusUint32(4)
+            })
+          ]));
     }));
   });
 
@@ -883,11 +1499,10 @@ void main() {
         writable: true,
         ask: true,
         activationToken: 'token');
-    expect(portalServer.lastParentWindow, equals('x11:12345'));
     expect(
         portalServer.openedUris,
         equals([
-          MockUri('http://example.com', {
+          MockUri('x11:12345', 'http://example.com', {
             'writable': DBusBoolean(true),
             'ask': DBusBoolean(true),
             'activation_token': DBusString('token')

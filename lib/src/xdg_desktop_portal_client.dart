@@ -8,6 +8,7 @@ import 'xdg_background_portal.dart';
 import 'xdg_camera_portal.dart';
 import 'xdg_email_portal.dart';
 import 'xdg_file_chooser_portal.dart';
+import 'xdg_memory_monitor_portal.dart';
 import 'xdg_network_monitor_portal.dart';
 import 'xdg_notification_portal.dart';
 import 'xdg_location_portal.dart';
@@ -41,6 +42,9 @@ class XdgDesktopPortalClient {
 
   /// Portal to get location information.
   late final XdgLocationPortal location;
+
+  /// Portal to monitor memory.
+  late final XdgMemoryMonitorPortal memoryMonitor;
 
   /// Portal to monitor networking.
   late final XdgNetworkMonitorPortal networkMonitor;
@@ -76,6 +80,7 @@ class XdgDesktopPortalClient {
     email = XdgEmailPortal(_object, _generateToken);
     fileChooser = XdgFileChooserPortal(_object, _generateToken);
     location = XdgLocationPortal(_object, _generateToken);
+    memoryMonitor = XdgMemoryMonitorPortal(_object);
     networkMonitor = XdgNetworkMonitorPortal(_object);
     notification = XdgNotificationPortal(_object);
     openUri = XdgOpenUriPortal(_object, _generateToken);

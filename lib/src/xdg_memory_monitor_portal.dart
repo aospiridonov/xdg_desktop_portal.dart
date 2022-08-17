@@ -15,64 +15,45 @@ enum LowMemoryWarning {
   critical
 }
 
-class _MemoryMonitorStreamController {
-  final DBusRemoteObject portalObject;
+/// Memory monitoring portal.
+class XdgMemoryMonitorPortal {
+  final DBusRemoteObject _object;
+  late final DBusRemoteObjectSignalStream _changed;
+  late final StreamController<LowMemoryWarning> _controller;
 
-  late final StreamController<LowMemoryWarning> controller;
-
-  StreamSubscription? _lowMemoryWarningSubscription;
-
-  /// Low level of memory monitor received from the portal.
-  Stream<LowMemoryWarning> get stream => controller.stream;
-
-  _MemoryMonitorStreamController({required this.portalObject}) {
-    controller = StreamController<LowMemoryWarning>(
-        onListen: _onListen, onCancel: _onCancel);
-  }
-
-  Future<void> _onListen() async {
-    var lowMemoryWarning = DBusSignalStream(
-      portalObject.client,
-      interface: 'org.freedesktop.portal.MemoryMonitor',
-      name: 'LowMemoryWarning',
-      path: portalObject.path,
-      signature: DBusSignature('u'),
-    );
-
-    _lowMemoryWarningSubscription = lowMemoryWarning.listen((signal) {
-      var value = signal.values[0].asUint16();
+  XdgMemoryMonitorPortal(this._object) {
+    _changed = DBusRemoteObjectSignalStream(
+        object: _object,
+        interface: 'org.freedesktop.portal.MemoryMonitor',
+        name: 'LowMemoryWarning',
+        signature: DBusSignature('y'));
+    _controller = StreamController<LowMemoryWarning>();
+    _changed.listen((signal) async {
+      var value = signal.values[0].asByte();
       if (value == 50) {
-        controller.add(LowMemoryWarning.low);
+        _controller.add(LowMemoryWarning.low);
       }
       if (value == 100) {
-        controller.add(LowMemoryWarning.medium);
+        _controller.add(LowMemoryWarning.medium);
       }
       if (value == 255) {
-        controller.add(LowMemoryWarning.critical);
+        _controller.add(LowMemoryWarning.critical);
       }
     });
   }
 
-  Future<void> _onCancel() async {
-    await _lowMemoryWarningSubscription?.cancel();
-  }
-}
-
-/// Memory monitoring portal.
-class XdgMemoryMonitorPortal {
-  final DBusRemoteObject _object;
-
-  XdgMemoryMonitorPortal(this._object);
-
   /// Get the version of this portal.
-  Future<int> getVersion() => _object
-      .getProperty('org.freedesktop.portal.MemoryMonitor', 'version',
-          signature: DBusSignature('u'))
-      .then((v) => v.asUint32());
+  Future<int> getVersion() {
+    _controller.add(LowMemoryWarning.critical);
 
-  /// Get low memory warning updates.
+    return _object
+        .getProperty('org.freedesktop.portal.MemoryMonitor', 'version',
+            signature: DBusSignature('u'))
+        .then((v) => v.asUint32());
+  }
+
+  /// Get low memory warning stream.
   Stream<LowMemoryWarning> get lowMemoryWarning {
-    var controller = _MemoryMonitorStreamController(portalObject: _object);
-    return controller.stream;
+    return _controller.stream;
   }
 }
